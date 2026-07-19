@@ -23,7 +23,7 @@ const createWindow = () => {
   if (devServerUrl) {
     void mainWindow.loadURL(devServerUrl);
   } else {
-    void mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
+    void mainWindow.loadFile(path.join(__dirname, "../../dist/index.html"));
   }
 };
 

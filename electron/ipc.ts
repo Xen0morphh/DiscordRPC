@@ -1,55 +1,66 @@
-import { BrowserWindow, app, ipcMain, shell } from "electron";
-import crypto from "node:crypto";
-import http from "node:http";
+import { BrowserWindow, app, ipcMain } from "electron";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import https from "node:https";
 import path from "node:path";
+import { promisify } from "node:util";
 import DiscordRPC from "discord-rpc";
-import type { AppConfig, RpcState, SpotifyTrack, TokenSet } from "./types.js";
+import type { AppConfig, LyricLine, RpcState, SpotifyTrack } from "./types.js";
+import { getCurrentLyric, getLyricsForTrack } from "./lyrics.js";
 
-const SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize";
-const SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token";
-const SPOTIFY_CURRENTLY_PLAYING_URL = "https://api.spotify.com/v1/me/player/currently-playing";
-const REDIRECT_PORT = 4387;
-const REDIRECT_URI = `http://127.0.0.1:${REDIRECT_PORT}/callback`;
-const SCOPES = ["user-read-currently-playing", "user-read-playback-state"];
+const execFileAsync = promisify(execFile);
 
 const defaultConfig: AppConfig = {
-  spotifyClientId: "",
   discordClientId: "",
-  pollIntervalMs: 5000,
-  showAlbumArt: true,
-  showButtons: true
+  discordUserToken: "",
+  pollIntervalMs: 3000,
+  showAlbumArt: false,
+  showLyrics: true
 };
 
 type PersistedState = {
   config: AppConfig;
-  tokens: TokenSet | null;
 };
 
 let state: RpcState = {
   config: defaultConfig,
-  spotifyConnected: false,
+  mediaSessionAvailable: false,
   discordConnected: false,
   running: false,
-  authInProgress: false,
   lastTrack: null,
-  message: "Isi Spotify Client ID dan Discord Application ID, lalu hubungkan Spotify.",
+  currentLyric: null,
+  lyricsStatus: "disabled",
+  message: "Isi Discord Token & buka Spotify desktop, lalu tekan Start.",
   error: null
 };
 
-let tokens: TokenSet | null = null;
 let rpcClient: InstanceType<typeof DiscordRPC.Client> | null = null;
 let pollTimer: NodeJS.Timeout | null = null;
 let lastPresenceKey = "";
+let lastPresenceTime = 0;
+const MIN_PRESENCE_INTERVAL_MS = 5_000;
+
+// Custom status state
+let lastCustomStatusText = "";
+let lastCustomStatusTime = 0;
+const MIN_CUSTOM_STATUS_INTERVAL_MS = 5_000;
+
+// Lyrics state
+let currentTrackId = "";
+let currentLyrics: LyricLine[] = [];
+let currentLyricsSynced = false;
+
+// Last RPC action log (forwarded to UI)
+let lastRpcLog = "";
 
 const configPath = () => path.join(app.getPath("userData"), "config.json");
 
 const sanitizeConfig = (input: Partial<AppConfig>): AppConfig => ({
-  spotifyClientId: String(input.spotifyClientId ?? "").trim(),
   discordClientId: String(input.discordClientId ?? "").trim(),
-  pollIntervalMs: Math.min(Math.max(Number(input.pollIntervalMs) || 5000, 3000), 30000),
-  showAlbumArt: Boolean(input.showAlbumArt ?? true),
-  showButtons: Boolean(input.showButtons ?? true)
+  discordUserToken: String(input.discordUserToken ?? "").trim(),
+  pollIntervalMs: Math.min(Math.max(Number(input.pollIntervalMs) || 3000, 1000), 30000),
+  showAlbumArt: false,
+  showLyrics: input.showLyrics !== false
 });
 
 const publish = (getWindow: () => BrowserWindow | null) => {
@@ -66,11 +77,6 @@ const loadPersisted = async () => {
     const raw = await fs.readFile(configPath(), "utf8");
     const persisted = JSON.parse(raw) as Partial<PersistedState>;
     state.config = sanitizeConfig({ ...defaultConfig, ...persisted.config });
-    tokens = persisted.tokens ?? null;
-    state.spotifyConnected = Boolean(tokens?.refreshToken);
-    if (state.spotifyConnected) {
-      state.message = "Spotify sudah terhubung. Tekan Start untuk mulai update Discord.";
-    }
   } catch {
     await savePersisted();
   }
@@ -78,150 +84,153 @@ const loadPersisted = async () => {
 
 const savePersisted = async () => {
   const persisted: PersistedState = {
-    config: state.config,
-    tokens
+    config: state.config
   };
   await fs.mkdir(path.dirname(configPath()), { recursive: true });
   await fs.writeFile(configPath(), JSON.stringify(persisted, null, 2), "utf8");
 };
 
-const base64Url = (buffer: Buffer) =>
-  buffer.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+// ---------------------------------------------------------------------------
+// Discord Custom Status via REST API
+// ---------------------------------------------------------------------------
 
-const createPkce = () => {
-  const verifier = base64Url(crypto.randomBytes(64));
-  const challenge = base64Url(crypto.createHash("sha256").update(verifier).digest());
-  return { verifier, challenge };
-};
-
-const exchangeToken = async (body: URLSearchParams): Promise<TokenSet> => {
-  const response = await fetch(SPOTIFY_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body
-  });
-
-  if (!response.ok) {
-    throw new Error(`Spotify token gagal (${response.status})`);
-  }
-
-  const data = (await response.json()) as {
-    access_token: string;
-    refresh_token?: string;
-    expires_in: number;
-  };
-
-  return {
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token ?? tokens?.refreshToken ?? "",
-    expiresAt: Date.now() + data.expires_in * 1000 - 60_000
-  };
-};
-
-const refreshAccessToken = async () => {
-  if (!tokens?.refreshToken) {
-    throw new Error("Spotify belum terhubung.");
-  }
-
-  if (tokens.expiresAt > Date.now()) {
-    return tokens.accessToken;
-  }
-
-  tokens = await exchangeToken(
-    new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: tokens.refreshToken,
-      client_id: state.config.spotifyClientId
-    })
-  );
-  await savePersisted();
-  return tokens.accessToken;
-};
-
-const waitForAuthCode = () =>
-  new Promise<string>((resolve, reject) => {
-    let settled = false;
-    const finish = (callback: () => void) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      server.close();
-      callback();
-    };
-
-    const server = http.createServer((request, response) => {
-      const requestUrl = new URL(request.url ?? "/", REDIRECT_URI);
-      const code = requestUrl.searchParams.get("code");
-      const error = requestUrl.searchParams.get("error");
-
-      response.writeHead(error ? 400 : 200, { "Content-Type": "text/html" });
-      response.end("<html><body><h2>Spotify connected. You can close this window.</h2></body></html>");
-
-      if (error) {
-        finish(() => reject(new Error(`Spotify auth ditolak: ${error}`)));
-      } else if (!code) {
-        finish(() => reject(new Error("Spotify tidak mengirim authorization code.")));
-      } else {
-        finish(() => resolve(code));
-      }
+const updateCustomStatus = (token: string, text: string | null): Promise<boolean> =>
+  new Promise((resolve) => {
+    const body = JSON.stringify({
+      custom_status: text
+        ? { text: text.slice(0, 128), emoji_name: "🎵" }
+        : null
     });
 
-    server.once("error", reject);
-    server.listen(REDIRECT_PORT, "127.0.0.1");
-    const timeout = setTimeout(() => {
-      finish(() => reject(new Error("Login Spotify timeout.")));
-    }, 120_000).unref();
+    const req = https.request(
+      "https://discord.com/api/v9/users/@me/settings",
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: token,
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+          "User-Agent": "DiscordRPC-SpotifyLyrics/1.0"
+        }
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
+        res.on("end", () => {
+          if (res.statusCode === 200) {
+            resolve(true);
+          } else {
+            console.error(`[CustomStatus] API error ${res.statusCode}: ${data.slice(0, 200)}`);
+            resolve(false);
+          }
+        });
+      }
+    );
+
+    req.on("error", (err) => {
+      console.error("[CustomStatus] Request failed:", err.message);
+      resolve(false);
+    });
+
+    req.setTimeout(8000, () => {
+      req.destroy();
+      resolve(false);
+    });
+
+    req.write(body);
+    req.end();
   });
 
-const fetchCurrentTrack = async (): Promise<SpotifyTrack | null> => {
-  const accessToken = await refreshAccessToken();
-  const response = await fetch(SPOTIFY_CURRENTLY_PLAYING_URL, {
-    headers: { Authorization: `Bearer ${accessToken}` }
-  });
+// ---------------------------------------------------------------------------
+// Windows Media Session reader
+// ---------------------------------------------------------------------------
 
-  if (response.status === 204) {
-    return null;
+const mediaSessionScript = `
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$managerType = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]
+$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+  $_.Name -eq 'AsTask' -and
+  $_.IsGenericMethod -and
+  $_.GetParameters().Count -eq 1
+})[0]
+
+function Await-WinRt($Operation, $ResultType) {
+  $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
+  $task = $asTask.Invoke($null, @($Operation))
+  $task.Wait() | Out-Null
+  return $task.Result
+}
+
+$manager = Await-WinRt ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()) $managerType
+$sessions = @($manager.GetSessions())
+$session = $sessions | Where-Object { $_.SourceAppUserModelId -like '*Spotify*' } | Select-Object -First 1
+if ($null -eq $session) {
+  @{ found = $false } | ConvertTo-Json -Compress
+  exit 0
+}
+
+$props = Await-WinRt ($session.TryGetMediaPropertiesAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties])
+$timeline = $session.GetTimelineProperties()
+$playback = $session.GetPlaybackInfo()
+$status = $playback.PlaybackStatus.ToString()
+
+@{
+  found = $true
+  title = [string]$props.Title
+  artist = [string]$props.Artist
+  album = [string]$props.AlbumTitle
+  source = [string]$session.SourceAppUserModelId
+  status = [string]$status
+  progressMs = [int64]$timeline.Position.TotalMilliseconds
+  durationMs = [int64]$timeline.EndTime.TotalMilliseconds
+} | ConvertTo-Json -Compress
+`;
+
+const readLocalSpotifyTrack = async (): Promise<SpotifyTrack | null> => {
+  if (process.platform !== "win32") {
+    throw new Error("Mode tanpa Web API saat ini memakai Windows media session, jadi hanya tersedia di Windows.");
   }
 
-  if (!response.ok) {
-    throw new Error(`Spotify currently-playing gagal (${response.status})`);
-  }
+  const { stdout } = await execFileAsync(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", mediaSessionScript],
+    { timeout: 8000, windowsHide: true, maxBuffer: 1024 * 128 }
+  );
 
-  const data = (await response.json()) as {
-    is_playing: boolean;
-    progress_ms: number;
-    item?: {
-      id: string;
-      name: string;
-      duration_ms: number;
-      album: { name: string; images: Array<{ url: string }> };
-      artists: Array<{ name: string }>;
-      external_urls?: { spotify?: string };
-    };
+  const data = JSON.parse(stdout.trim() || "{}") as {
+    found?: boolean;
+    title?: string;
+    artist?: string;
+    album?: string;
+    source?: string;
+    status?: string;
+    progressMs?: number;
+    durationMs?: number;
   };
 
-  if (!data.item) {
+  if (!data.found || !data.title) {
     return null;
   }
 
   return {
-    id: data.item.id,
-    title: data.item.name,
-    artist: data.item.artists.map((artist) => artist.name).join(", "),
-    album: data.item.album.name,
-    albumArtUrl: data.item.album.images[0]?.url,
-    spotifyUrl: data.item.external_urls?.spotify,
-    progressMs: data.progress_ms ?? 0,
-    durationMs: data.item.duration_ms,
-    isPlaying: data.is_playing
+    id: `${data.source ?? "local"}:${data.title}:${data.artist ?? ""}`,
+    title: data.title,
+    artist: data.artist || "Unknown Artist",
+    album: data.album || "Spotify",
+    progressMs: Math.max(0, data.progressMs ?? 0),
+    durationMs: Math.max(0, data.durationMs ?? 0),
+    isPlaying: data.status === "Playing",
+    source: data.source ?? "Local media session"
   };
 };
 
-const connectDiscord = async () => {
+// ---------------------------------------------------------------------------
+// Discord RPC (Rich Presence) — optional, if client ID provided
+// ---------------------------------------------------------------------------
+
+const connectDiscord = async (getWindow?: () => BrowserWindow | null) => {
   if (!state.config.discordClientId) {
-    throw new Error("Discord Application ID wajib diisi.");
+    return null; // No client ID — skip RPC, use custom status only
   }
 
   if (rpcClient) {
@@ -229,9 +238,21 @@ const connectDiscord = async () => {
   }
 
   DiscordRPC.register(state.config.discordClientId);
-  rpcClient = new DiscordRPC.Client({ transport: "ipc" });
-  await rpcClient.login({ clientId: state.config.discordClientId });
+  const client = new DiscordRPC.Client({ transport: "ipc" });
+
+  (client as any).transport?.on?.("close", () => {
+    console.warn("[RPC] Discord IPC connection closed unexpectedly");
+    rpcClient = null;
+    state.discordConnected = false;
+    if (getWindow) {
+      getWindow()?.webContents.send("rpc:state", state);
+    }
+  });
+
+  await client.login({ clientId: state.config.discordClientId });
+  rpcClient = client;
   state.discordConnected = true;
+  console.log("[RPC] Connected to Discord successfully");
   return rpcClient;
 };
 
@@ -242,9 +263,9 @@ const clearPresence = async () => {
   lastPresenceKey = "";
 };
 
-const updatePresence = async (track: SpotifyTrack | null) => {
+const updatePresence = async (track: SpotifyTrack | null, lyric: string | null) => {
   if (!rpcClient) {
-    return;
+    return; // No RPC client — skip (custom status will handle it)
   }
 
   if (!track || !track.isPlaying) {
@@ -252,46 +273,215 @@ const updatePresence = async (track: SpotifyTrack | null) => {
     return;
   }
 
-  const presenceKey = `${track.id}:${Math.floor(track.progressMs / 5000)}:${track.isPlaying}`;
+  const stateText = (state.config.showLyrics && lyric) ? lyric.slice(0, 128) : track.artist.slice(0, 128);
+
+  const presenceKey = `${track.id}:${track.isPlaying}:${stateText}`;
+  const now = Date.now();
+
   if (presenceKey === lastPresenceKey) {
     return;
   }
-  lastPresenceKey = presenceKey;
 
-  const startTimestamp = Date.now() - track.progressMs;
-  const endTimestamp = startTimestamp + track.durationMs;
-  await rpcClient.setActivity({
-    details: track.title.slice(0, 128),
-    state: track.artist.slice(0, 128),
-    startTimestamp,
-    endTimestamp,
-    largeImageKey: state.config.showAlbumArt ? track.albumArtUrl ?? "spotify" : "spotify",
-    largeImageText: track.album.slice(0, 128),
-    smallImageKey: "spotify",
-    smallImageText: "Listening on Spotify",
-    buttons:
-      state.config.showButtons && track.spotifyUrl
-        ? [{ label: "Open in Spotify", url: track.spotifyUrl }]
-        : undefined,
-    instance: false
-  });
+  const timeSinceLast = now - lastPresenceTime;
+  if (lastPresenceTime > 0 && timeSinceLast < MIN_PRESENCE_INTERVAL_MS) {
+    return;
+  }
+
+  lastPresenceKey = presenceKey;
+  lastPresenceTime = now;
+
+  const startTimestamp = Math.floor((Date.now() - track.progressMs) / 1000);
+  const endTimestamp = track.durationMs > 0 ? startTimestamp + Math.floor(track.durationMs / 1000) : undefined;
+
+  try {
+    await rpcClient.setActivity({
+      details: track.title.slice(0, 128),
+      state: stateText,
+      startTimestamp,
+      endTimestamp,
+      largeImageKey: "spotify",
+      largeImageText: track.album.slice(0, 128),
+      smallImageKey: "spotify",
+      smallImageText: "Listening on Spotify",
+      instance: false
+    });
+  } catch (err) {
+    console.error("[RPC] setActivity FAILED:", err);
+    rpcClient = null;
+    state.discordConnected = false;
+    lastPresenceKey = "";
+  }
 };
 
+// ---------------------------------------------------------------------------
+// Custom Status updater — updates "Rawrr" area with lyrics
+// ---------------------------------------------------------------------------
+
+const updateLyricsCustomStatus = async (track: SpotifyTrack | null, lyric: string | null) => {
+  const token = state.config.discordUserToken;
+  if (!token) {
+    return; // No token — skip custom status
+  }
+
+  // Build status text
+  let statusText: string | null = null;
+  if (track?.isPlaying && state.config.showLyrics && lyric) {
+    statusText = lyric;
+  } else if (track?.isPlaying) {
+    statusText = `${track.title} — ${track.artist}`;
+  }
+
+  // Skip if text hasn't changed
+  const newText = statusText ?? "";
+  if (newText === lastCustomStatusText) {
+    return;
+  }
+
+  // Throttle
+  const now = Date.now();
+  const timeSinceLast = now - lastCustomStatusTime;
+  if (lastCustomStatusTime > 0 && timeSinceLast < MIN_CUSTOM_STATUS_INTERVAL_MS) {
+    const waitSec = Math.ceil((MIN_CUSTOM_STATUS_INTERVAL_MS - timeSinceLast) / 1000);
+    lastRpcLog = `[Status] ⏳ Throttled — update dalam ${waitSec}s | "${newText.slice(0, 40)}..."`;
+    return;
+  }
+
+  lastCustomStatusText = newText;
+  lastCustomStatusTime = now;
+
+  const ok = await updateCustomStatus(token, statusText);
+  if (ok) {
+    lastRpcLog = statusText
+      ? `[Status] ✓ Custom status → "🎵 ${statusText.slice(0, 60)}..."`
+      : "[Status] ✓ Custom status dihapus";
+    console.log(lastRpcLog);
+  } else {
+    lastRpcLog = "[Status] ✗ Gagal update custom status — cek token Discord";
+    console.error(lastRpcLog);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Lyrics integration into poll cycle
+// ---------------------------------------------------------------------------
+
+const fetchAndCacheLyrics = async (track: SpotifyTrack, getWindow: () => BrowserWindow | null) => {
+  if (!state.config.showLyrics) {
+    currentTrackId = track.id;
+    currentLyrics = [];
+    currentLyricsSynced = false;
+    setState(getWindow, { lyricsStatus: "disabled", currentLyric: null });
+    return;
+  }
+
+  // Only refetch when track changes
+  if (track.id === currentTrackId && currentLyrics.length > 0) {
+    return;
+  }
+
+  currentTrackId = track.id;
+  setState(getWindow, { lyricsStatus: "loading", currentLyric: null });
+
+  try {
+    const result = await getLyricsForTrack(track.id, track.title, track.artist, track.album, track.durationMs);
+    currentLyrics = result.lyrics;
+    currentLyricsSynced = result.synced;
+    setState(getWindow, { lyricsStatus: result.status });
+  } catch {
+    currentLyrics = [];
+    currentLyricsSynced = false;
+    setState(getWindow, { lyricsStatus: "not_found" });
+  }
+};
+
+const resolveLyric = (track: SpotifyTrack, offsetMs = 0): string | null => {
+  if (!state.config.showLyrics || currentLyrics.length === 0) {
+    return null;
+  }
+  return getCurrentLyric(currentLyrics, track.progressMs + offsetMs);
+};
+
+// ---------------------------------------------------------------------------
+// Polling
+// ---------------------------------------------------------------------------
+
 const pollOnce = async (getWindow: () => BrowserWindow | null) => {
-  const track = await fetchCurrentTrack();
-  await updatePresence(track);
+  const track = await readLocalSpotifyTrack();
+
+  let lyric: string | null = null;
+  let discordLyric: string | null = null;
+
+  if (track) {
+    await fetchAndCacheLyrics(track, getWindow);
+    lyric = resolveLyric(track, 0); // Akurat untuk UI app
+    discordLyric = resolveLyric(track, 1500); // Trik: offset +1.5 detik untuk menutupi latency/rate limit Discord
+  } else {
+    if (currentTrackId) {
+      currentTrackId = "";
+      currentLyrics = [];
+      currentLyricsSynced = false;
+    }
+  }
+
+  // Auto-reconnect RPC if needed and client ID is set
+  if (!rpcClient && state.config.discordClientId) {
+    try {
+      await connectDiscord(getWindow);
+    } catch (err) {
+      console.warn("[RPC] Reconnect failed:", err);
+    }
+  }
+
+  // Update Rich Presence (if client ID provided)
+  await updatePresence(track, discordLyric);
+
+  // Update Custom Status (if user token provided) — this is the "Rawrr" area
+  await updateLyricsCustomStatus(track, discordLyric);
+
+  // Clear custom status when music stops
+  if (!track?.isPlaying && lastCustomStatusText && state.config.discordUserToken) {
+    await updateCustomStatus(state.config.discordUserToken, null);
+    lastCustomStatusText = "";
+    lastRpcLog = "[Status] Musik berhenti — custom status dihapus";
+  }
+
   setState(getWindow, {
+    mediaSessionAvailable: Boolean(track),
+    discordConnected: Boolean(rpcClient) || Boolean(state.config.discordUserToken),
     lastTrack: track,
+    currentLyric: lyric,
     error: null,
     message: track?.isPlaying
-      ? `Discord update: ${track.title} - ${track.artist}`
+      ? lastRpcLog || `Update: ${track.title} — ${track.artist}`
       : "Tidak ada lagu Spotify yang sedang diputar."
   });
 };
 
 const startPolling = async (getWindow: () => BrowserWindow | null) => {
-  await connectDiscord();
-  setState(getWindow, { running: true, discordConnected: true, error: null, message: "Realtime update aktif." });
+  const hasToken = Boolean(state.config.discordUserToken);
+  const hasClientId = Boolean(state.config.discordClientId);
+
+  if (!hasToken && !hasClientId) {
+    throw new Error("Isi minimal Discord User Token (untuk custom status) atau Discord Application ID (untuk Rich Presence).");
+  }
+
+  // Connect RPC if client ID is provided
+  if (hasClientId) {
+    try {
+      await connectDiscord(getWindow);
+    } catch (err) {
+      console.warn("[RPC] Could not connect RPC:", err);
+      // Don't throw — we can still use custom status
+    }
+  }
+
+  setState(getWindow, {
+    running: true,
+    discordConnected: Boolean(rpcClient) || hasToken,
+    error: null,
+    message: hasToken ? "Custom status lyrics aktif!" : "Rich Presence aktif."
+  });
+
   await pollOnce(getWindow);
 
   if (pollTimer) {
@@ -302,7 +492,7 @@ const startPolling = async (getWindow: () => BrowserWindow | null) => {
     void pollOnce(getWindow).catch((error: unknown) => {
       setState(getWindow, {
         error: error instanceof Error ? error.message : String(error),
-        message: "Polling Spotify gagal."
+        message: "Polling media lokal gagal."
       });
     });
   }, state.config.pollIntervalMs);
@@ -314,7 +504,22 @@ const stopPolling = async (getWindow: () => BrowserWindow | null) => {
     pollTimer = null;
   }
   await clearPresence();
-  setState(getWindow, { running: false, message: "Realtime update dihentikan." });
+
+  // Clear custom status when stopping
+  if (state.config.discordUserToken && lastCustomStatusText) {
+    await updateCustomStatus(state.config.discordUserToken, null);
+    lastCustomStatusText = "";
+  }
+
+  currentTrackId = "";
+  currentLyrics = [];
+  currentLyricsSynced = false;
+  setState(getWindow, {
+    running: false,
+    currentLyric: null,
+    lyricsStatus: state.config.showLyrics ? "synced" : "disabled",
+    message: "Realtime update dihentikan."
+  });
 };
 
 export const setupIpc = (getWindow: () => BrowserWindow | null) => {
@@ -329,53 +534,6 @@ export const setupIpc = (getWindow: () => BrowserWindow | null) => {
     return state;
   });
 
-  ipcMain.handle("rpc:connect-spotify", async () => {
-    try {
-      if (!state.config.spotifyClientId) {
-        throw new Error("Spotify Client ID wajib diisi.");
-      }
-
-      const { verifier, challenge } = createPkce();
-      const params = new URLSearchParams({
-        client_id: state.config.spotifyClientId,
-        response_type: "code",
-        redirect_uri: REDIRECT_URI,
-        code_challenge_method: "S256",
-        code_challenge: challenge,
-        scope: SCOPES.join(" ")
-      });
-
-      setState(getWindow, { authInProgress: true, error: null, message: "Membuka login Spotify..." });
-      const authCodePromise = waitForAuthCode();
-      await shell.openExternal(`${SPOTIFY_AUTH_URL}?${params.toString()}`);
-      const code = await authCodePromise;
-      tokens = await exchangeToken(
-        new URLSearchParams({
-          grant_type: "authorization_code",
-          code,
-          redirect_uri: REDIRECT_URI,
-          client_id: state.config.spotifyClientId,
-          code_verifier: verifier
-        })
-      );
-      await savePersisted();
-      setState(getWindow, {
-        spotifyConnected: true,
-        authInProgress: false,
-        error: null,
-        message: "Spotify terhubung. Tekan Start untuk update Discord."
-      });
-      return state;
-    } catch (error) {
-      setState(getWindow, {
-        authInProgress: false,
-        error: error instanceof Error ? error.message : String(error),
-        message: "Gagal menghubungkan Spotify."
-      });
-      return state;
-    }
-  });
-
   ipcMain.handle("rpc:start", async () => {
     try {
       await startPolling(getWindow);
@@ -383,7 +541,7 @@ export const setupIpc = (getWindow: () => BrowserWindow | null) => {
       setState(getWindow, {
         running: false,
         error: error instanceof Error ? error.message : String(error),
-        message: "Gagal memulai realtime update."
+        message: "Gagal memulai."
       });
     }
     return state;
@@ -391,19 +549,6 @@ export const setupIpc = (getWindow: () => BrowserWindow | null) => {
 
   ipcMain.handle("rpc:stop", async () => {
     await stopPolling(getWindow);
-    return state;
-  });
-
-  ipcMain.handle("rpc:disconnect-spotify", async () => {
-    await stopPolling(getWindow);
-    tokens = null;
-    await savePersisted();
-    setState(getWindow, {
-      spotifyConnected: false,
-      lastTrack: null,
-      message: "Spotify diputuskan.",
-      error: null
-    });
     return state;
   });
 };

@@ -1,15 +1,9 @@
 export type AppConfig = {
-  spotifyClientId: string;
   discordClientId: string;
+  discordUserToken: string;
   pollIntervalMs: number;
   showAlbumArt: boolean;
-  showButtons: boolean;
-};
-
-export type TokenSet = {
-  accessToken: string;
-  refreshToken: string;
-  expiresAt: number;
+  showLyrics: boolean;
 };
 
 export type SpotifyTrack = {
@@ -17,20 +11,25 @@ export type SpotifyTrack = {
   title: string;
   artist: string;
   album: string;
-  albumArtUrl?: string;
-  spotifyUrl?: string;
   progressMs: number;
   durationMs: number;
   isPlaying: boolean;
+  source: string;
+};
+
+export type LyricLine = {
+  timeMs: number;
+  text: string;
 };
 
 export type RpcState = {
   config: AppConfig;
-  spotifyConnected: boolean;
+  mediaSessionAvailable: boolean;
   discordConnected: boolean;
   running: boolean;
-  authInProgress: boolean;
   lastTrack: SpotifyTrack | null;
+  currentLyric: string | null;
+  lyricsStatus: string;
   message: string;
   error: string | null;
 };

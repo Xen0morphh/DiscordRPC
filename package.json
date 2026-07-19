@@ -2,18 +2,19 @@
   "name": "discordrpc-spotify-realtime",
   "version": "0.1.0",
   "private": true,
-  "description": "Realtime Discord Rich Presence for the song currently playing on Spotify.",
-  "main": "dist-electron/main.js",
+  "description": "Realtime Discord Rich Presence from the local Spotify desktop media session.",
+  "author": "Xenomorph",
+  "main": "dist-electron/electron/main.js",
   "scripts": {
-    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"tsc -p tsconfig.electron.json --watch\" \"wait-on http://127.0.0.1:5173 dist-electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"tsc -p tsconfig.electron.json --watch\" \"wait-on http://127.0.0.1:5173 dist-electron/electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
     "build": "tsc && vite build && tsc -p tsconfig.electron.json",
     "preview": "vite preview --host 127.0.0.1",
-    "start": "electron ."
+    "start": "electron .",
+    "package": "npm run build && electron-builder --win"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
     "discord-rpc": "^4.0.1",
-    "electron": "^33.3.1",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
@@ -24,8 +25,25 @@
     "@types/react-dom": "^18.3.5",
     "concurrently": "^9.1.0",
     "cross-env": "^7.0.3",
+    "electron": "^33.3.1",
+    "electron-builder": "^26.15.3",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
     "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.xenomorph.discordrpc-lyrics",
+    "productName": "DiscordRPC Realtime Lyrics",
+    "win": {
+      "target": "nsis"
+    },
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist-electron/**/*",
+      "dist/**/*",
+      "package.json"
+    ]
   }
 }
