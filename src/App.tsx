@@ -251,14 +251,23 @@ export const App = () => {
                 </div>
               )}
 
-              {(state.lyricsStatus === "synced" || state.lyricsStatus === "plain") && state.currentLyric && (
+              {state.lyricsStatus === "synced" && state.currentLyric && (
                 <p key={state.currentLyric} className="lyric-line fade-in">
                   {state.currentLyric}
                 </p>
               )}
 
-              {(state.lyricsStatus === "synced" || state.lyricsStatus === "plain") && !state.currentLyric && state.lastTrack?.isPlaying && (
+              {state.lyricsStatus === "synced" && !state.currentLyric && state.lastTrack?.isPlaying && (
                 <p className="lyric-line waiting">♪ . . .</p>
+              )}
+
+              {state.lyricsStatus === "plain" && (
+                <div className="lyric-line plain-lyrics-info">
+                  <p style={{ margin: 0, fontWeight: "500" }}>Lirik tersedia (tidak disinkronkan)</p>
+                  <p style={{ margin: "4px 0 0", fontSize: "0.85em", opacity: 0.7 }}>
+                    Status Discord: {state.lastTrack?.title} — {state.lastTrack?.artist}
+                  </p>
+                </div>
               )}
 
               {state.lyricsStatus === "not_found" && (

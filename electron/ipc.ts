@@ -54,7 +54,7 @@ let customStatusInFlight = false;
 let pendingCustomStatus: { text: string | null; token: string } | null = null;
 let lockoutUntil = 0;
 let lastSuccessfulRequestTime = 0;
-const MIN_UPDATE_INTERVAL_MS = 100; // minimum 100ms between status updates for absolute realtime feel
+const MIN_UPDATE_INTERVAL_MS = 4000; // rate limit: maximum 1 request per 4s to avoid Discord 429 lockout
 
 // Lyrics state
 let currentTrackId = "";
@@ -399,7 +399,7 @@ const flushCustomStatus = async () => {
 // Debounce timer — waits for lyric to settle before sending to Discord
 let customStatusDebounceTimer: NodeJS.Timeout | null = null;
 let customStatusDebounceText = ""; // what text is currently being debounced
-const CUSTOM_STATUS_DEBOUNCE_MS = 100;
+const CUSTOM_STATUS_DEBOUNCE_MS = 1000; // wait 1s before sending to Discord to handle quick skips
 
 /** Enqueue a custom status update with debounce. The status only fires
  *  after the lyric text has been stable for CUSTOM_STATUS_DEBOUNCE_MS,
@@ -523,7 +523,7 @@ const getCurrentLyricIndex = (lyrics: LyricLine[], progressMs: number): number =
 let lastLyricIndex = -1;
 
 const resolveLyric = (progressMs: number): string | null => {
-  if (!state.config.showLyrics || currentLyrics.length === 0) {
+  if (!state.config.showLyrics || currentLyrics.length === 0 || !currentLyricsSynced) {
     return null;
   }
 
@@ -740,12 +740,12 @@ const startPolling = async (getWindow: () => BrowserWindow | null) => {
     });
   }, state.config.pollIntervalMs);
 
-  // Sub-second high frequency tick for instant real-time lyric transitions (100ms)
+  // Sub-second high frequency tick for instant real-time lyric transitions (50ms)
   tickTimer = setInterval(() => {
     void tickRealtime(getWindow).catch((err) => {
       console.error("[Realtime] Tick error:", err);
     });
-  }, 100);
+  }, 50);
 };
 
 const stopPolling = async (getWindow: () => BrowserWindow | null) => {
