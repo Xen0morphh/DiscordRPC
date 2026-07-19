@@ -10,7 +10,7 @@
     "build": "tsc && vite build && tsc -p tsconfig.electron.json",
     "preview": "vite preview --host 127.0.0.1",
     "start": "electron .",
-    "package": "npm run build && electron-builder --win"
+    "package": "npm run build && node scripts/build.js"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
@@ -30,20 +30,5 @@
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
     "wait-on": "^8.0.1"
-  },
-  "build": {
-    "appId": "com.xenomorph.discordrpc-lyrics",
-    "productName": "DiscordRPC Realtime Lyrics",
-    "win": {
-      "target": "nsis"
-    },
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist-electron/**/*",
-      "dist/**/*",
-      "package.json"
-    ]
   }
 }

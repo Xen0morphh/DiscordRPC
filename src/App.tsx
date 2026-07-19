@@ -7,7 +7,9 @@ const emptyConfig: AppConfig = {
   discordUserToken: "",
   pollIntervalMs: 3000,
   showAlbumArt: false,
-  showLyrics: true
+  showLyrics: true,
+  lyricsOffsetMs: 0,
+  largeImageKey: ""
 };
 
 const initialState: RpcState = {
@@ -44,7 +46,6 @@ export const App = () => {
   const [state, setState] = useState<RpcState>(initialState);
   const [form, setForm] = useState<AppConfig>(emptyConfig);
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [lyricFade, setLyricFade] = useState(false);
   const api = window.spotifyRpc;
 
   useEffect(() => {
@@ -63,22 +64,8 @@ export const App = () => {
 
     return api.onState((nextState) => {
       setState(nextState);
-      setForm(nextState.config);
     });
   }, [api]);
-
-  // Trigger fade animation when lyric changes
-  const prevLyricRef = useMemo(() => ({ current: "" }), []);
-  useEffect(() => {
-    const newLyric = state.currentLyric ?? "";
-    if (newLyric !== prevLyricRef.current) {
-      prevLyricRef.current = newLyric;
-      setLyricFade(true);
-      const timeout = setTimeout(() => setLyricFade(false), 350);
-      return () => clearTimeout(timeout);
-    }
-    return undefined;
-  }, [state.currentLyric, prevLyricRef]);
 
   const progressPercent = useMemo(() => {
     if (!state.lastTrack?.durationMs) {
@@ -160,6 +147,7 @@ export const App = () => {
               value={form.pollIntervalMs}
               onChange={(event) => setForm({ ...form, pollIntervalMs: Number(event.target.value) })}
             >
+              <option value={500}>0.5 detik (Super fast)</option>
               <option value={1000}>1 detik</option>
               <option value={2000}>2 detik</option>
               <option value={3000}>3 detik</option>
@@ -167,6 +155,18 @@ export const App = () => {
               <option value={10000}>10 detik</option>
               <option value={15000}>15 detik</option>
             </select>
+          </label>
+
+          <label>
+            ⏱️ Offset Lyrics (ms)
+            <input
+              type="number"
+              step={100}
+              value={form.lyricsOffsetMs ?? 0}
+              onChange={(event) => setForm({ ...form, lyricsOffsetMs: Number(event.target.value) || 0 })}
+              placeholder="0 (misal: -500 jika lirik telat)"
+            />
+            <span className="field-hint">Gunakan minus (-) jika lirik terlambat, plus (+) jika terlalu cepat</span>
           </label>
 
           <div className="toggle-row">
@@ -252,7 +252,7 @@ export const App = () => {
               )}
 
               {(state.lyricsStatus === "synced" || state.lyricsStatus === "plain") && state.currentLyric && (
-                <p className={`lyric-line ${lyricFade ? "fade-in" : ""}`}>
+                <p key={state.currentLyric} className="lyric-line fade-in">
                   {state.currentLyric}
                 </p>
               )}
@@ -267,10 +267,6 @@ export const App = () => {
 
               {state.lyricsStatus === "disabled" && (
                 <p className="lyric-line not-found">Aktifkan "Show Lyrics" di settings</p>
-              )}
-
-              {!state.lastTrack?.isPlaying && state.lyricsStatus !== "loading" && state.lyricsStatus !== "disabled" && (
-                <p className="lyric-line not-found">Putar lagu untuk melihat lyrics</p>
               )}
             </div>
           </div>

@@ -31,6 +31,14 @@ app.whenReady().then(() => {
   setupIpc(() => mainWindow);
   createWindow();
 
+  // Automatically start application on system startup when packaged
+  if (app.isPackaged) {
+    app.setLoginItemSettings({
+      openAtLogin: true,
+      path: app.getPath("exe")
+    });
+  }
+
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();

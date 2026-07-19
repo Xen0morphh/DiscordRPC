@@ -1,40 +1,79 @@
-# Spotify Discord RPC
+# Spotify Discord RPC with Realtime Lyrics
 
-Aplikasi Electron untuk meng-update Discord Rich Presence secara realtime berdasarkan lagu yang sedang diputar di Spotify desktop.
+Aplikasi desktop berbasis Electron + React + TypeScript untuk menampilkan lagu Spotify yang sedang diputar di status Discord Anda secara realtime, lengkap dengan sinkronisasi lirik (lyrics) secara otomatis ke custom status Discord.
 
-Mode ini tidak memakai Spotify Web API, tidak membutuhkan Spotify Client ID, dan tidak membutuhkan akun Spotify Premium. Metadata lagu dibaca dari media session lokal Windows.
+Aplikasi ini **tidak memerlukan Spotify Web API, tidak memerlukan login, dan tidak membutuhkan akun Spotify Premium**. Informasi lagu dibaca langsung secara aman dari Media Session lokal Windows.
 
-## Cara pakai
+---
 
-1. Install dependency:
+> [!WARNING]
+> **Catatan Mengenai Rate Limit Discord (HTTP 429)**
+> 
+> Karena aplikasi ini meng-update custom status Anda secara realtime (setiap lirik lagu berubah), Anda sewaktu-waktu akan terkena pembatasan sementara (**Rate Limit**) dari server Discord. 
+> 
+> Jika ini terjadi, aplikasi secara cerdas akan **menahan sementara (hold/freeze)** update status Anda selama waktu *cool-down* yang diminta oleh Discord (biasanya 20-40 detik) agar akun Anda tetap aman dari cap spam. Status akan otomatis berjalan kembali secara realtime setelah masa tunggu selesai.
 
-   ```bash
-   npm install
-   ```
+---
 
-2. Buat Discord application di Discord Developer Portal.
+## Fitur Utama
 
-   Salin Application ID. Kalau ingin memakai asset fallback, tambahkan asset bernama `spotify` di bagian Rich Presence assets.
+- 🎵 **Realtime Discord Rich Presence**: Menampilkan judul lagu, artis, album, dan progress bar.
+- 💬 **Auto-sync Lyrics ke Custom Status**: Secara otomatis mencari lirik lagu dan meng-update-nya ke custom status Discord (misal: `"🎵 Lirik Lagu..."`).
+- ⚡ **Zero Setup & Tanpa Login**: Tidak membutuhkan Spotify Developer API, client ID, client secret, ataupun login akun Spotify.
+- ⚙️ **Konfigurasi Fleksibel**: Atur interval polling lirik, offset waktu lirik (jika lirik terlalu cepat/lambat), dan nyalakan/matikan sinkronisasi lirik sesuai keinginan.
+- 🛠️ **Windows Setup Installer**: Installer resmi agar aplikasi terpasang di sistem Windows Anda lengkap dengan shortcut desktop dan start menu.
 
-3. Jalankan Spotify desktop dan putar lagu.
+---
 
-4. Jalankan aplikasi:
+## Cara Install & Menjalankan (Pengguna)
 
-   ```bash
-   npm run dev
-   ```
+Jika Anda ingin memakai aplikasi yang sudah di-build:
 
-5. Isi Discord Application ID di aplikasi, lalu klik Save.
+1. **Unduh & Jalankan Installer**: Unduh file `.zip` (yang berisi installer `.exe`) dari halaman release GitHub, lalu ekstrak dan jalankan file setup di dalamnya.
+2. **Proses Instalasi Otomatis**: Setelah dijalankan, installer akan memasang aplikasi secara otomatis ke folder aman (`%LOCALAPPDATA%`) tanpa perlu konfigurasi manual, kemudian aplikasi akan langsung terbuka. Shortcut akan dibuat di Desktop dan Start Menu.
+3. **Jalankan Aplikasi**: Aplikasi siap digunakan dan akan terbuka otomatis. Jika ingin membuka kembali di lain waktu, gunakan shortcut di Desktop/Start Menu. Aplikasi ini juga akan berjalan otomatis setiap kali komputer dinyalakan.
+4. **Persiapan**:
+   - Pastikan aplikasi Discord desktop Anda aktif.
+   - Buka Spotify desktop dan putar lagu.
+5. **Konfigurasi di Aplikasi**:
+   - Masukkan token akun Discord Anda (untuk sinkronisasi lirik ke custom status, opsional).
+   - Masukkan Discord Application ID (untuk Rich Presence 'Playing...', opsional).
+6. **Mulai Sinkronisasi**: Klik tombol **Start** di aplikasi. Status Anda akan mulai di-update secara otomatis.
 
-6. Klik Start. Status Discord akan mengikuti lagu yang sedang diputar.
+---
 
+<<<<<<< HEAD
 NOTE: UNTUK LYRICS KE STATUS HARUS TOKEN DISCORD ID
 caranya adalah ke local storage dari inspect discordnya
 thanks guys!
 
 ## Catatan
+=======
+## Panduan Development & Build Manual
+>>>>>>> ce97cf5 (update and optimization)
 
-- Tidak ada token Spotify yang disimpan karena aplikasi tidak login ke Spotify.
-- Polling default berjalan tiap 3 detik dan bisa diubah dari UI.
-- Discord harus sedang berjalan di komputer yang sama agar Rich Presence bisa tersambung melalui IPC.
-- Mode lokal ini memakai Windows Global System Media Transport Controls, jadi target utamanya Windows.
+Jika Anda ingin menjalankan aplikasi dari source code atau mem-package ulang:
+
+### 1. Install Dependency
+Pastikan Anda sudah menginstall [Node.js](https://nodejs.org/). Jalankan perintah berikut di root folder project:
+```bash
+npm install
+```
+
+### 2. Jalankan Mode Development (Dev Server)
+Untuk menguji aplikasi secara langsung:
+```bash
+npm run dev
+```
+
+### 3. Build & Package ke Installer (.exe)
+Untuk membuat file setup installer Windows mandiri ke folder `release/`:
+```bash
+npm run package
+```
+
+---
+
+## Catatan Penting
+- **Keamanan Token**: Token Discord Anda hanya disimpan secara lokal di dalam folder data aplikasi dan dikirim langsung ke Discord Gateway untuk meng-update status. Tidak ada data yang dikirim ke server pihak ketiga.
+- **Media Session**: Mode lokal ini menggunakan Windows Global System Media Transport Controls (GSMTC), sehingga aplikasi ini dikhususkan untuk sistem operasi Windows.

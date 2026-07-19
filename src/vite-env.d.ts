@@ -6,6 +6,8 @@ export type AppConfig = {
   pollIntervalMs: number;
   showAlbumArt: boolean;
   showLyrics: boolean;
+  lyricsOffsetMs: number;
+  largeImageKey: string;
 };
 
 export type SpotifyTrack = {

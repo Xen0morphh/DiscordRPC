@@ -1,8 +1,27 @@
 {
-  "appId": "local.spotify.discordrpc",
+  "appId": "com.xenomorph.spotify.discordrpc",
   "productName": "Spotify Discord RPC",
   "directories": {
     "output": "release"
   },
-  "files": ["dist/**/*", "dist-electron/**/*", "package.json"]
+  "win": {
+    "icon": "assets/icon.ico",
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Spotify Discord RPC"
+  },
+  "files": [
+    "dist/**/*",
+    "dist-electron/**/*",
+    "package.json"
+  ]
 }
