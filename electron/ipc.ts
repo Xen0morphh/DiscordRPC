@@ -38,7 +38,7 @@ let state: RpcState = {
 };
 
 let tokens: TokenSet | null = null;
-let rpcClient: DiscordRPC.Client | null = null;
+let rpcClient: InstanceType<typeof DiscordRPC.Client> | null = null;
 let pollTimer: NodeJS.Timeout | null = null;
 let lastPresenceKey = "";
 

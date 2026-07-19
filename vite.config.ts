@@ -5,7 +5,12 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: "dist",
-    emptyOutDir: true
+    emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        app: "index.html"
+      }
+    }
   },
   server: {
     host: "127.0.0.1",
