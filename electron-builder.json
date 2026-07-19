@@ -1,0 +1,8 @@
+{
+  "appId": "local.spotify.discordrpc",
+  "productName": "Spotify Discord RPC",
+  "directories": {
+    "output": "release"
+  },
+  "files": ["dist/**/*", "dist-electron/**/*", "package.json"]
+}
