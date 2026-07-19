@@ -28,6 +28,10 @@ Mode ini tidak memakai Spotify Web API, tidak membutuhkan Spotify Client ID, dan
 
 6. Klik Start. Status Discord akan mengikuti lagu yang sedang diputar.
 
+NOTE: UNTUK LYRICS KE STATUS HARUS TOKEN DISCORD ID
+caranya adalah ke local storage dari inspect discordnya
+thanks guys!
+
 ## Catatan
 
 - Tidak ada token Spotify yang disimpan karena aplikasi tidak login ke Spotify.
