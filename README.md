@@ -8,6 +8,11 @@ This application **does not require the Spotify Web API, does not require a Spot
 
 ---
 
+
+> ANY WAY THIS HOW TO GET YOUR TOKEN
+
+'''https://youtu.be/OYHVqdLGMTo'''
+
 > [!WARNING]
 > **A Note on Discord Rate Limits (HTTP 429)**
 > 
