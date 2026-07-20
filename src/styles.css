@@ -293,7 +293,7 @@ select:focus {
   height: 100%;
   border-radius: inherit;
   background: #45dfa9;
-  transition: width 220ms ease;
+  transition: none;
 }
 
 .message-box {
@@ -409,7 +409,7 @@ select:focus {
 }
 
 .lyric-line.fade-in {
-  animation: lyricFadeIn 0.4s ease-out;
+  animation: lyricFadeIn 0.15s ease-out;
 }
 
 .lyric-line.waiting {
@@ -429,7 +429,7 @@ select:focus {
 @keyframes lyricFadeIn {
   0% {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(3px);
   }
   100% {
     opacity: 1;

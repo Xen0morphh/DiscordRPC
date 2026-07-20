@@ -1,6 +1,6 @@
 import { Activity, CheckCircle2, CircleSlash, Loader2, Mic2, MicOff, Pause, Play, Save } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { AppConfig, RpcState } from "./vite-env";
+import { useEffect, useRef, useState } from "react";
+import type { AppConfig, RpcState, SpotifyTrack } from "./vite-env";
 import { t } from "./utils/translations";
 
 const emptyConfig: AppConfig = {
@@ -64,6 +64,21 @@ const getLanguageLabel = (code: string): string => {
   return matched ? matched.label : "English";
 };
 
+const XenomorphIcon = ({ size = 20 }: { size?: number }) => (
+  <img
+    src="/xenomorph-logo.png"
+    alt="Xenomorph"
+    style={{
+      width: `${size}px`,
+      height: `${size}px`,
+      display: "inline-block",
+      verticalAlign: "middle",
+      borderRadius: "50%",
+      objectFit: "contain"
+    }}
+  />
+);
+
 export const App = () => {
   const [state, setState] = useState<RpcState>(initialState);
   const [form, setForm] = useState<AppConfig>(emptyConfig);
@@ -105,12 +120,69 @@ export const App = () => {
     });
   }, [api]);
 
-  const progressPercent = useMemo(() => {
-    if (!state.lastTrack?.durationMs) {
-      return 0;
+  const localProgressRef = useRef(0);
+  const baselineProgressRef = useRef(0);
+  const baselineTimeRef = useRef(0);
+  const lastTrackRef = useRef<SpotifyTrack | null>(null);
+  const isPlayingRef = useRef(false);
+  const durationRef = useRef(0);
+
+  const progressTextRef = useRef<HTMLSpanElement>(null);
+  const progressBarRef = useRef<HTMLDivElement>(null);
+
+  // Sync baseline from backend state — only on track change, play state change, or seek
+  useEffect(() => {
+    if (!state.lastTrack) {
+      localProgressRef.current = 0;
+      baselineProgressRef.current = 0;
+      baselineTimeRef.current = 0;
+      lastTrackRef.current = null;
+      isPlayingRef.current = false;
+      durationRef.current = 0;
+      if (progressTextRef.current) progressTextRef.current.textContent = "0:00";
+      if (progressBarRef.current) progressBarRef.current.style.width = "0%";
+      return;
     }
-    return Math.min(100, (state.lastTrack.progressMs / state.lastTrack.durationMs) * 100);
+
+    const prev = lastTrackRef.current;
+    const isDifferentTrack = !prev || prev.id !== state.lastTrack.id;
+    const playStateChanged = !prev || prev.isPlaying !== state.lastTrack.isPlaying;
+    const localVal = localProgressRef.current;
+    const isSeek = Math.abs(localVal - state.lastTrack.progressMs) > 3000;
+
+    // Always keep refs in sync
+    isPlayingRef.current = state.lastTrack.isPlaying;
+    durationRef.current = state.lastTrack.durationMs;
+
+    if (isDifferentTrack || playStateChanged || isSeek || localVal === 0) {
+      localProgressRef.current = state.lastTrack.progressMs;
+      baselineProgressRef.current = state.lastTrack.progressMs;
+      baselineTimeRef.current = performance.now();
+      lastTrackRef.current = state.lastTrack;
+    }
   }, [state.lastTrack]);
+
+  // Single persistent rAF loop — starts once on mount, never restarts
+  useEffect(() => {
+    let rafId: number;
+    const tick = () => {
+      if (isPlayingRef.current && durationRef.current > 0) {
+        const elapsed = performance.now() - baselineTimeRef.current;
+        const current = Math.min(durationRef.current, baselineProgressRef.current + elapsed);
+        localProgressRef.current = current;
+
+        if (progressTextRef.current) {
+          progressTextRef.current.textContent = formatTime(current);
+        }
+        if (progressBarRef.current) {
+          progressBarRef.current.style.width = `${Math.min(100, (current / durationRef.current) * 100)}%`;
+        }
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, []); // empty deps = mount once, never restart
 
   const runAction = async (name: string, action: () => Promise<RpcState>) => {
     if (!api) {
@@ -399,11 +471,20 @@ export const App = () => {
 
           <div className="progress-wrap">
             <div className="progress-meta">
-              <span>{formatTime(state.lastTrack?.progressMs ?? 0)}</span>
+              <span ref={progressTextRef}>{formatTime(state.lastTrack?.progressMs ?? 0)}</span>
               <span>{formatTime(state.lastTrack?.durationMs ?? 0)}</span>
             </div>
             <div className="progress-track">
-              <div style={{ width: `${progressPercent}%` }} />
+              <div
+                ref={progressBarRef}
+                style={{
+                  width: `${
+                    state.lastTrack?.durationMs
+                      ? Math.min(100, (state.lastTrack.progressMs / state.lastTrack.durationMs) * 100)
+                      : 0
+                  }%`
+                }}
+              />
             </div>
           </div>
 
@@ -462,6 +543,19 @@ export const App = () => {
           </div>
         </section>
       </section>
+      <footer className="footer-credit" style={{
+        textAlign: "center",
+        paddingTop: "24px",
+        fontSize: "0.82rem",
+        opacity: 0.55,
+        color: "#94a3b8",
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+        gap: "6px"
+      }}>
+        Made by <XenomorphIcon size={20} /> Xenomorph
+      </footer>
     </main>
   );
 };

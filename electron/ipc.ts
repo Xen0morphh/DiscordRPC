@@ -1,5 +1,6 @@
 import { BrowserWindow, app, ipcMain } from "electron";
-import { execFile } from "node:child_process";
+import { execFile, spawn, ChildProcess } from "node:child_process";
+import readline from "node:readline";
 import fs from "node:fs/promises";
 import https from "node:https";
 import path from "node:path";
@@ -64,7 +65,7 @@ let pendingCustomStatus: { text: string | null; token: string } | null = null;
 let lockoutUntil = 0;
 let lastSuccessfulRequestTime = 0;
 const getMinUpdateIntervalMs = () => {
-  return state?.config?.discordStatusMode === "aesthetic" ? 1000 : 3000;
+  return state?.config?.discordStatusMode === "aesthetic" ? 3000 : 5000;
 };
 
 // Lyrics state
@@ -94,7 +95,14 @@ const sanitizeConfig = (input: Partial<AppConfig>): AppConfig => ({
 });
 
 const publish = (getWindow: () => BrowserWindow | null) => {
-  getWindow()?.webContents.send("rpc:state", state);
+  const win = getWindow();
+  if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+    try {
+      win.webContents.send("rpc:state", state);
+    } catch (e) {
+      console.warn("[IPC] Failed to send state to window:", e);
+    }
+  }
 };
 
 const setState = (getWindow: () => BrowserWindow | null, patch: Partial<RpcState>) => {
@@ -202,72 +210,218 @@ function Await-WinRt($Operation, $ResultType) {
   return $task.Result
 }
 
-$manager = Await-WinRt ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()) $managerType
-$sessions = @($manager.GetSessions())
-$session = $sessions | Where-Object { $_.SourceAppUserModelId -like '*Spotify*' } | Select-Object -First 1
-if ($null -eq $session) {
-  @{ found = $false } | ConvertTo-Json -Compress
-  exit 0
+while ($line = [Console]::ReadLine()) {
+  try {
+    $manager = Await-WinRt ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()) $managerType
+    $sessions = @($manager.GetSessions())
+    $session = $sessions | Where-Object { $_.SourceAppUserModelId -like '*Spotify*' } | Select-Object -First 1
+    if ($null -eq $session) {
+      Write-Output '{"found":false}'
+    } else {
+      $props = Await-WinRt ($session.TryGetMediaPropertiesAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties])
+      $timeline = $session.GetTimelineProperties()
+      $playback = $session.GetPlaybackInfo()
+      $status = $playback.PlaybackStatus.ToString()
+      
+      @{
+        found = $true
+        title = [string]$props.Title
+        artist = [string]$props.Artist
+        album = [string]$props.AlbumTitle
+        source = [string]$session.SourceAppUserModelId
+        status = [string]$status
+        progressMs = [int64]$timeline.Position.TotalMilliseconds
+        durationMs = [int64]$timeline.EndTime.TotalMilliseconds
+      } | ConvertTo-Json -Compress | Write-Output
+    }
+  } catch {
+    Write-Output '{"found":false}'
+  }
 }
-
-$props = Await-WinRt ($session.TryGetMediaPropertiesAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties])
-$timeline = $session.GetTimelineProperties()
-$playback = $session.GetPlaybackInfo()
-$status = $playback.PlaybackStatus.ToString()
-
-@{
-  found = $true
-  title = [string]$props.Title
-  artist = [string]$props.Artist
-  album = [string]$props.AlbumTitle
-  source = [string]$session.SourceAppUserModelId
-  status = [string]$status
-  progressMs = [int64]$timeline.Position.TotalMilliseconds
-  durationMs = [int64]$timeline.EndTime.TotalMilliseconds
-} | ConvertTo-Json -Compress
 `;
+
+let powershellProcess: ChildProcess | null = null;
+let powershellReader: readline.Interface | null = null;
+let pendingQueryPromise: {
+  resolve: (value: SpotifyTrack | null) => void;
+  reject: (err: Error) => void;
+} | null = null;
+
+const killPowershellProcess = () => {
+  if (powershellProcess) {
+    try {
+      powershellProcess.kill();
+    } catch (e) {
+      console.error("[PowerShell] Error killing process:", e);
+    }
+    powershellProcess = null;
+  }
+  if (powershellReader) {
+    try {
+      powershellReader.close();
+    } catch (e) {}
+    powershellReader = null;
+  }
+  if (pendingQueryPromise) {
+    pendingQueryPromise.resolve(null);
+    pendingQueryPromise = null;
+  }
+};
+
+const ensurePowershellProcess = (): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    if (powershellProcess && powershellReader) {
+      resolve();
+      return;
+    }
+
+    try {
+      console.log("[PowerShell] Spawning persistent PowerShell process...");
+      const ps = spawn(
+        "powershell.exe",
+        ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", mediaSessionScript],
+        {
+          windowsHide: true,
+          cwd: app.getPath("temp")
+        }
+      );
+
+      powershellProcess = ps;
+
+      ps.on("error", (err) => {
+        console.error("[PowerShell] Process error:", err);
+        killPowershellProcess();
+      });
+
+      ps.on("exit", (code, signal) => {
+        console.warn(`[PowerShell] Process exited with code ${code}, signal ${signal}`);
+        killPowershellProcess();
+      });
+
+      const reader = readline.createInterface({
+        input: ps.stdout!,
+        terminal: false
+      });
+      powershellReader = reader;
+
+      ps.stderr!.on("data", (data) => {
+        console.error("[PowerShell stderr]:", data.toString());
+      });
+
+      let initResolved = false;
+      const initTimeout = setTimeout(() => {
+        if (!initResolved) {
+          console.error("[PowerShell] Initialization timed out");
+          killPowershellProcess();
+          reject(new Error("PowerShell initialization timed out"));
+        }
+      }, 8000);
+
+      reader.on("line", (line) => {
+        if (!initResolved) {
+          initResolved = true;
+          clearTimeout(initTimeout);
+          console.log("[PowerShell] Persistent process initialized successfully.");
+          resolve();
+          return;
+        }
+
+        if (pendingQueryPromise) {
+          const res = pendingQueryPromise.resolve;
+          pendingQueryPromise = null;
+          res(parseSpotifyJson(line));
+        }
+      });
+
+      // Trigger first output to verify it is up and running
+      ps.stdin!.write("QUERY\n");
+
+    } catch (err) {
+      console.error("[PowerShell] Failed to spawn:", err);
+      killPowershellProcess();
+      reject(err);
+    }
+  });
+};
+
+const parseSpotifyJson = (line: string): SpotifyTrack | null => {
+  try {
+    const data = JSON.parse(line.trim() || "{}") as {
+      found?: boolean;
+      title?: string;
+      artist?: string;
+      album?: string;
+      source?: string;
+      status?: string;
+      progressMs?: number;
+      durationMs?: number;
+    };
+
+    if (!data.found || !data.title) {
+      return null;
+    }
+
+    return {
+      id: `${data.source ?? "local"}:${data.title}:${data.artist ?? ""}`,
+      title: data.title,
+      artist: data.artist || "Unknown Artist",
+      album: data.album || "Spotify",
+      progressMs: Math.max(0, data.progressMs ?? 0),
+      durationMs: Math.max(0, data.durationMs ?? 0),
+      isPlaying: data.status === "Playing",
+      source: data.source ?? "Local media session"
+    };
+  } catch (e) {
+    console.error("[PowerShell] JSON parse error:", e);
+    return null;
+  }
+};
 
 const readLocalSpotifyTrack = async (): Promise<SpotifyTrack | null> => {
   if (process.platform !== "win32") {
     throw new Error(tState("msgWinMediaSessionRequired"));
   }
 
-  const { stdout } = await execFileAsync(
-    "powershell.exe",
-    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", mediaSessionScript],
-    {
-      timeout: 8000,
-      windowsHide: true,
-      maxBuffer: 1024 * 128,
-      cwd: app.getPath("temp")
-    }
-  );
-
-  const data = JSON.parse(stdout.trim() || "{}") as {
-    found?: boolean;
-    title?: string;
-    artist?: string;
-    album?: string;
-    source?: string;
-    status?: string;
-    progressMs?: number;
-    durationMs?: number;
-  };
-
-  if (!data.found || !data.title) {
+  try {
+    await ensurePowershellProcess();
+  } catch (err) {
+    console.error("[PowerShell] ensurePowershellProcess failed:", err);
     return null;
   }
 
-  return {
-    id: `${data.source ?? "local"}:${data.title}:${data.artist ?? ""}`,
-    title: data.title,
-    artist: data.artist || "Unknown Artist",
-    album: data.album || "Spotify",
-    progressMs: Math.max(0, data.progressMs ?? 0),
-    durationMs: Math.max(0, data.durationMs ?? 0),
-    isPlaying: data.status === "Playing",
-    source: data.source ?? "Local media session"
-  };
+  const proc = powershellProcess;
+  const input = powershellProcess?.stdin;
+  if (!proc || !input) {
+    return null;
+  }
+
+  return new Promise<SpotifyTrack | null>((resolve) => {
+    if (pendingQueryPromise) {
+      pendingQueryPromise.resolve(null);
+    }
+
+    const queryTimeout = setTimeout(() => {
+      console.warn("[PowerShell] Query timed out");
+      if (pendingQueryPromise) {
+        pendingQueryPromise.resolve(null);
+        pendingQueryPromise = null;
+      }
+      killPowershellProcess();
+    }, 4000);
+
+    pendingQueryPromise = {
+      resolve: (track) => {
+        clearTimeout(queryTimeout);
+        resolve(track);
+      },
+      reject: () => {
+        clearTimeout(queryTimeout);
+        resolve(null);
+      }
+    };
+
+    input.write("QUERY\n");
+  });
 };
 
 // ---------------------------------------------------------------------------
@@ -367,13 +521,16 @@ const updatePresence = async (track: SpotifyTrack | null, lyric: string | null) 
 
 /** Flush one queued custom status update. If a newer update arrived while
  *  the HTTP request was in flight, it will be sent immediately after. */
-const flushCustomStatus = async () => {
+const flushCustomStatus = async (getWindow: () => BrowserWindow | null) => {
   while (pendingCustomStatus) {
     // 1. Handle 429 lockout sleep
     const now = Date.now();
     if (now < lockoutUntil) {
       const waitTime = lockoutUntil - now;
-      console.warn(`[CustomStatus] Rate limited. Waiting ${Math.ceil(waitTime / 1000)}s before flushing...`);
+      const seconds = Math.ceil(waitTime / 1000);
+      lastRpcLog = `[Status] ✗ Discord rate limit — waiting ${seconds}s`;
+      console.warn(`[CustomStatus] Rate limited. Waiting ${seconds}s before flushing...`);
+      setState(getWindow, { error: lastRpcLog });
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
 
@@ -403,9 +560,17 @@ const flushCustomStatus = async () => {
         ? tState("msgCustomStatusUpdateSuccess", { text: text.slice(0, 60) })
         : tState("msgCustomStatusCleared");
       console.log(lastRpcLog);
+      setState(getWindow, { message: lastRpcLog, error: null });
     } else {
-      lastRpcLog = tState("msgCustomStatusUpdateFailed");
+      const currentNow = Date.now();
+      if (currentNow < lockoutUntil) {
+        const seconds = Math.ceil((lockoutUntil - currentNow) / 1000);
+        lastRpcLog = `[Status] ✗ Rate limited by Discord — frozen for ${seconds}s`;
+      } else {
+        lastRpcLog = tState("msgCustomStatusUpdateFailed");
+      }
       console.error(lastRpcLog);
+      setState(getWindow, { error: lastRpcLog });
     }
   }
 };
@@ -414,13 +579,13 @@ const flushCustomStatus = async () => {
 let customStatusDebounceTimer: NodeJS.Timeout | null = null;
 let customStatusDebounceText = ""; // what text is currently being debounced
 const getCustomStatusDebounceMs = () => {
-  return state?.config?.discordStatusMode === "aesthetic" ? 200 : 1000;
+  return state?.config?.discordStatusMode === "aesthetic" ? 1000 : 2500;
 };
 
 /** Enqueue a custom status update with debounce. The status only fires
  *  after the lyric text has been stable for getCustomStatusDebounceMs(),
  *  preventing rapid back-and-forth flicker on Discord. */
-const updateLyricsCustomStatus = (track: SpotifyTrack | null, lyric: string | null) => {
+const updateLyricsCustomStatus = (track: SpotifyTrack | null, lyric: string | null, getWindow: () => BrowserWindow | null) => {
   const token = state.config.discordUserToken;
   if (!token) {
     return; // No token — skip custom status
@@ -458,7 +623,7 @@ const updateLyricsCustomStatus = (track: SpotifyTrack | null, lyric: string | nu
     lastCustomStatusText = newText;
     pendingCustomStatus = { text: null, token };
     if (!customStatusInFlight) {
-      void flushCustomStatus();
+      void flushCustomStatus(getWindow);
     }
     return;
   }
@@ -471,7 +636,7 @@ const updateLyricsCustomStatus = (track: SpotifyTrack | null, lyric: string | nu
     lastCustomStatusText = newText;
     pendingCustomStatus = { text: statusText, token };
     if (!customStatusInFlight) {
-      void flushCustomStatus();
+      void flushCustomStatus(getWindow);
     }
   }, getCustomStatusDebounceMs());
 };
@@ -605,17 +770,17 @@ const tickRealtime = async (getWindow: () => BrowserWindow | null) => {
     updatedState = true;
   }
 
-  // Continuously update progressMs for smooth UI progress bar & timer display
-  state.lastTrack = updatedTrack;
-  updatedState = true;
+  // Discord updates (custom status is debounced + non-blocking)
+  updateLyricsCustomStatus(updatedTrack, lyric, getWindow);
+  void updatePresence(updatedTrack, lyric).catch((err) => {
+    console.error("[RPC] updatePresence error:", err);
+  });
 
   if (updatedState) {
+    // Only update lastTrack and publish state to UI on lyric change
+    state.lastTrack = updatedTrack;
     publish(getWindow);
   }
-
-  // Discord updates (custom status is debounced + non-blocking)
-  updateLyricsCustomStatus(updatedTrack, lyric);
-  await updatePresence(updatedTrack, lyric);
 };
 
 /**
@@ -632,35 +797,38 @@ const pollOnce = async (getWindow: () => BrowserWindow | null) => {
   // script execution latency and Windows Media Session snapshot lag.
   const newFetchTime = fetchStartTime;
 
+  let baselineUpdated = false;
+
   if (track) {
     // Track changed OR playback state changed → reset everything and accept new baseline
     if (track.id !== lastBaselineTrack?.id || track.isPlaying !== lastBaselineTrack?.isPlaying) {
       lastLyricIndex = -1;
       lastTrackFetchTime = newFetchTime;
       lastBaselineTrack = track;
+      baselineUpdated = true;
     } else {
-      // Same track and same playing state — check for backwards time jitter.
-      // Compare what we'd interpolate NOW with old vs new baseline:
+      // Same track and same playing state.
+      // Compare what we'd interpolate NOW with the new reading:
       const oldInterpolated = getInterpolatedProgress();
       const newInterpolated = track.progressMs + Math.max(0, Date.now() - newFetchTime);
       const diff = newInterpolated - oldInterpolated;
 
-      if (diff < -4000) {
-        // Large backward jump (>4s) → genuine seek backwards
+      // Only accept the new baseline if it represents a significant seek/drift (>3.0s)
+      if (Math.abs(diff) > 3000) {
         lastTrackFetchTime = newFetchTime;
         lastBaselineTrack = track;
-      } else if (diff >= -500) {
-        // Forward or tiny jitter → accept new baseline
-        lastTrackFetchTime = newFetchTime;
-        lastBaselineTrack = track;
+        baselineUpdated = true;
       }
-      // else: moderate backward jitter (-500ms to -4000ms) → keep old baseline (ignore stale read)
+      // Otherwise: keep the current baseline running to avoid any backward jitter or stuttering.
     }
 
     await fetchAndCacheLyrics(track, getWindow);
   } else {
-    lastTrackFetchTime = newFetchTime;
-    lastBaselineTrack = track;
+    if (lastBaselineTrack !== null) {
+      lastTrackFetchTime = newFetchTime;
+      lastBaselineTrack = null;
+      baselineUpdated = true;
+    }
     if (currentTrackId) {
       currentTrackId = "";
       currentLyrics = [];
@@ -690,6 +858,14 @@ const pollOnce = async (getWindow: () => BrowserWindow | null) => {
     lastRpcLog = tState("msgMusicStoppedStatusCleared");
   }
 
+  const mediaSessionAvailable = Boolean(track);
+  const discordConnected = Boolean(rpcClient) || Boolean(state.config.discordUserToken);
+
+  const trackChanged = track?.id !== state.lastTrack?.id;
+  const playStateChanged = track?.isPlaying !== state.lastTrack?.isPlaying;
+  const sessionAvailabilityChanged = mediaSessionAvailable !== state.mediaSessionAvailable;
+  const connectionChanged = discordConnected !== state.discordConnected;
+
   const currentProgressMs = (lastBaselineTrack && lastBaselineTrack.isPlaying)
     ? Math.min(
         lastBaselineTrack.durationMs || Infinity,
@@ -699,18 +875,20 @@ const pollOnce = async (getWindow: () => BrowserWindow | null) => {
 
   const currentTrackWithProgress = lastBaselineTrack
     ? { ...lastBaselineTrack, progressMs: currentProgressMs }
-    : track;
+    : null;
 
-  // Minimal state update — only metadata, NOT lyric (tickRealtime handles that)
-  setState(getWindow, {
-    mediaSessionAvailable: Boolean(track),
-    discordConnected: Boolean(rpcClient) || Boolean(state.config.discordUserToken),
-    lastTrack: currentTrackWithProgress,
-    error: null,
-    message: track?.isPlaying
-      ? lastRpcLog || tState("msgUpdateTrack", { title: track.title, artist: track.artist })
-      : tState("msgNoSpotifyPlayback")
-  });
+  // Only publish if something meaningful changed or seek baseline updated.
+  if (trackChanged || playStateChanged || sessionAvailabilityChanged || connectionChanged || baselineUpdated) {
+    setState(getWindow, {
+      mediaSessionAvailable,
+      discordConnected,
+      lastTrack: currentTrackWithProgress,
+      error: null,
+      message: track?.isPlaying
+        ? lastRpcLog || tState("msgUpdateTrack", { title: track.title, artist: track.artist })
+        : tState("msgNoSpotifyPlayback")
+    });
+  }
 };
 
 const runPollCycle = (getWindow: () => BrowserWindow | null) => {
@@ -776,6 +954,8 @@ const startPolling = async (getWindow: () => BrowserWindow | null) => {
 };
 
 const stopPolling = async (getWindow: () => BrowserWindow | null) => {
+  killPowershellProcess();
+
   if (pollTimer) {
     clearTimeout(pollTimer);
     pollTimer = null;
@@ -791,7 +971,7 @@ const stopPolling = async (getWindow: () => BrowserWindow | null) => {
   await clearPresence();
 
   // Clear custom status when stopping
-  if (state.config.discordUserToken && lastCustomStatusText) {
+  if (state.config.discordUserToken) {
     await updateCustomStatus(state.config.discordUserToken, null);
     lastCustomStatusText = "";
   }
@@ -812,6 +992,20 @@ const stopPolling = async (getWindow: () => BrowserWindow | null) => {
 
 export const setupIpc = (getWindow: () => BrowserWindow | null) => {
   void loadPersisted().then(() => publish(getWindow));
+
+  let isQuitting = false;
+  app.on("will-quit", (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      isQuitting = true;
+      console.log("[Quit] Cleaning up Discord presence and custom status before exit...");
+      stopPolling(getWindow)
+        .catch((err) => console.error("[Quit] Cleanup failed:", err))
+        .finally(() => {
+          app.quit();
+        });
+    }
+  });
 
   ipcMain.handle("rpc:get-state", () => state);
 
