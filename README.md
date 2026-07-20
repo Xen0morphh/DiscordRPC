@@ -8,11 +8,6 @@ This application **does not require the Spotify Web API, does not require a Spot
 
 ---
 
-
-> ANY WAY THIS HOW TO GET YOUR TOKEN
-
-'''https://youtu.be/OYHVqdLGMTo'''
-
 > [!WARNING]
 > **A Note on Discord Rate Limits (HTTP 429)**
 > 
@@ -48,6 +43,11 @@ This application **does not require the Spotify Web API, does not require a Spot
 > [!TIP]
 > **How to get your Discord Token:**
 > You can retrieve your token by opening Discord in your web browser (or dev tools in the desktop app), opening Inspect Element -> Application -> Local Storage -> `https://discord.com`, and searching for the `token` key. Keep this token private!
+
+
+'''
+A VIDEO HOW TO GET TOKEN: https://youtu.be/OYHVqdLGMTo
+'''
 
 ---
 
