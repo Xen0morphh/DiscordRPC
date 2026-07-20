@@ -8,6 +8,8 @@ export type AppConfig = {
   showLyrics: boolean;
   lyricsOffsetMs: number;
   largeImageKey: string;
+  language: string;
+  discordStatusMode?: string;
 };
 
 export type SpotifyTrack = {

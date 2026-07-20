@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import DiscordRPC from "discord-rpc";
 import type { AppConfig, LyricLine, RpcState, SpotifyTrack } from "./types.js";
 import { getLyricsForTrack } from "./lyrics.js";
+import { t } from "./translations.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -19,14 +20,22 @@ const defaultConfig: AppConfig = {
   showAlbumArt: false,
   showLyrics: true,
   lyricsOffsetMs: 0,
-  largeImageKey: DEFAULT_SPOTIFY_ICON_URL
+  largeImageKey: DEFAULT_SPOTIFY_ICON_URL,
+  language: "en",
+  discordStatusMode: "safe"
 };
 
 type PersistedState = {
   config: AppConfig;
 };
 
-let state: RpcState = {
+let state: RpcState;
+
+const tState = (key: Parameters<typeof t>[0], variables?: Parameters<typeof t>[2]) => {
+  return t(key, state?.config?.language || "en", variables);
+};
+
+state = {
   config: defaultConfig,
   mediaSessionAvailable: false,
   discordConnected: false,
@@ -34,7 +43,7 @@ let state: RpcState = {
   lastTrack: null,
   currentLyric: null,
   lyricsStatus: "disabled",
-  message: "Isi Discord Token & buka Spotify desktop, lalu tekan Start.",
+  message: tState("msgInitialPrompt"),
   error: null
 };
 
@@ -54,7 +63,9 @@ let customStatusInFlight = false;
 let pendingCustomStatus: { text: string | null; token: string } | null = null;
 let lockoutUntil = 0;
 let lastSuccessfulRequestTime = 0;
-const MIN_UPDATE_INTERVAL_MS = 4000; // rate limit: maximum 1 request per 4s to avoid Discord 429 lockout
+const getMinUpdateIntervalMs = () => {
+  return state?.config?.discordStatusMode === "aesthetic" ? 1000 : 3000;
+};
 
 // Lyrics state
 let currentTrackId = "";
@@ -73,11 +84,13 @@ const configPath = () => path.join(app.getPath("userData"), "config.json");
 const sanitizeConfig = (input: Partial<AppConfig>): AppConfig => ({
   discordClientId: String(input.discordClientId ?? "").trim(),
   discordUserToken: String(input.discordUserToken ?? "").trim(),
-  pollIntervalMs: Math.min(Math.max(Number(input.pollIntervalMs) || 3000, 500), 30000),
+  pollIntervalMs: Math.min(Math.max(Number(input.pollIntervalMs) || 3000, 100), 30000),
   showAlbumArt: false,
   showLyrics: input.showLyrics !== false,
   lyricsOffsetMs: Math.min(Math.max(Number(input.lyricsOffsetMs) || 0, -10000), 10000),
-  largeImageKey: String(input.largeImageKey ?? "").trim() || DEFAULT_SPOTIFY_ICON_URL
+  largeImageKey: String(input.largeImageKey ?? "").trim() || DEFAULT_SPOTIFY_ICON_URL,
+  language: String(input.language || "en").trim(),
+  discordStatusMode: String(input.discordStatusMode || "safe").trim()
 });
 
 const publish = (getWindow: () => BrowserWindow | null) => {
@@ -216,7 +229,7 @@ $status = $playback.PlaybackStatus.ToString()
 
 const readLocalSpotifyTrack = async (): Promise<SpotifyTrack | null> => {
   if (process.platform !== "win32") {
-    throw new Error("Mode tanpa Web API saat ini memakai Windows media session, jadi hanya tersedia di Windows.");
+    throw new Error(tState("msgWinMediaSessionRequired"));
   }
 
   const { stdout } = await execFileAsync(
@@ -366,8 +379,9 @@ const flushCustomStatus = async () => {
 
     // 2. Handle successful request minimum interval sleep
     const timeSinceLast = Date.now() - lastSuccessfulRequestTime;
-    if (timeSinceLast < MIN_UPDATE_INTERVAL_MS) {
-      const waitTime = MIN_UPDATE_INTERVAL_MS - timeSinceLast;
+    const minInterval = getMinUpdateIntervalMs();
+    if (timeSinceLast < minInterval) {
+      const waitTime = minInterval - timeSinceLast;
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
 
@@ -386,11 +400,11 @@ const flushCustomStatus = async () => {
     if (ok) {
       lastSuccessfulRequestTime = Date.now();
       lastRpcLog = text
-        ? `[Status] ✓ Custom status → "🎵 ${text.slice(0, 60)}..."`
-        : "[Status] ✓ Custom status dihapus";
+        ? tState("msgCustomStatusUpdateSuccess", { text: text.slice(0, 60) })
+        : tState("msgCustomStatusCleared");
       console.log(lastRpcLog);
     } else {
-      lastRpcLog = "[Status] ✗ Gagal update custom status — cek token Discord";
+      lastRpcLog = tState("msgCustomStatusUpdateFailed");
       console.error(lastRpcLog);
     }
   }
@@ -399,10 +413,12 @@ const flushCustomStatus = async () => {
 // Debounce timer — waits for lyric to settle before sending to Discord
 let customStatusDebounceTimer: NodeJS.Timeout | null = null;
 let customStatusDebounceText = ""; // what text is currently being debounced
-const CUSTOM_STATUS_DEBOUNCE_MS = 1000; // wait 1s before sending to Discord to handle quick skips
+const getCustomStatusDebounceMs = () => {
+  return state?.config?.discordStatusMode === "aesthetic" ? 200 : 1000;
+};
 
 /** Enqueue a custom status update with debounce. The status only fires
- *  after the lyric text has been stable for CUSTOM_STATUS_DEBOUNCE_MS,
+ *  after the lyric text has been stable for getCustomStatusDebounceMs(),
  *  preventing rapid back-and-forth flicker on Discord. */
 const updateLyricsCustomStatus = (track: SpotifyTrack | null, lyric: string | null) => {
   const token = state.config.discordUserToken;
@@ -457,7 +473,7 @@ const updateLyricsCustomStatus = (track: SpotifyTrack | null, lyric: string | nu
     if (!customStatusInFlight) {
       void flushCustomStatus();
     }
-  }, CUSTOM_STATUS_DEBOUNCE_MS);
+  }, getCustomStatusDebounceMs());
 };
 
 // ---------------------------------------------------------------------------
@@ -671,7 +687,7 @@ const pollOnce = async (getWindow: () => BrowserWindow | null) => {
   if (!track?.isPlaying && lastCustomStatusText && state.config.discordUserToken) {
     await updateCustomStatus(state.config.discordUserToken, null);
     lastCustomStatusText = "";
-    lastRpcLog = "[Status] Musik berhenti — custom status dihapus";
+    lastRpcLog = tState("msgMusicStoppedStatusCleared");
   }
 
   const currentProgressMs = (lastBaselineTrack && lastBaselineTrack.isPlaying)
@@ -692,9 +708,26 @@ const pollOnce = async (getWindow: () => BrowserWindow | null) => {
     lastTrack: currentTrackWithProgress,
     error: null,
     message: track?.isPlaying
-      ? lastRpcLog || `Update: ${track.title} — ${track.artist}`
-      : "Tidak ada lagu Spotify yang sedang diputar."
+      ? lastRpcLog || tState("msgUpdateTrack", { title: track.title, artist: track.artist })
+      : tState("msgNoSpotifyPlayback")
   });
+};
+
+const runPollCycle = (getWindow: () => BrowserWindow | null) => {
+  if (!state.running) return;
+
+  void pollOnce(getWindow)
+    .catch((error: unknown) => {
+      setState(getWindow, {
+        error: error instanceof Error ? error.message : String(error),
+        message: tState("msgLocalMediaPollFailed")
+      });
+    })
+    .finally(() => {
+      if (state.running) {
+        pollTimer = setTimeout(() => runPollCycle(getWindow), state.config.pollIntervalMs);
+      }
+    });
 };
 
 const startPolling = async (getWindow: () => BrowserWindow | null) => {
@@ -702,7 +735,7 @@ const startPolling = async (getWindow: () => BrowserWindow | null) => {
   const hasClientId = Boolean(state.config.discordClientId);
 
   if (!hasToken && !hasClientId) {
-    throw new Error("Isi minimal Discord User Token (untuk custom status) atau Discord Application ID (untuk Rich Presence).");
+    throw new Error(tState("msgTokenOrClientIdRequired"));
   }
 
   // Connect RPC if client ID is provided
@@ -719,26 +752,20 @@ const startPolling = async (getWindow: () => BrowserWindow | null) => {
     running: true,
     discordConnected: Boolean(rpcClient) || hasToken,
     error: null,
-    message: hasToken ? "Custom status lyrics aktif!" : "Rich Presence aktif."
+    message: hasToken ? tState("msgCustomStatusLyricsActive") : tState("msgRichPresenceActive")
   });
 
-  await pollOnce(getWindow);
-
   if (pollTimer) {
-    clearInterval(pollTimer);
+    clearTimeout(pollTimer);
+    pollTimer = null;
   }
   if (tickTimer) {
     clearInterval(tickTimer);
+    tickTimer = null;
   }
 
-  pollTimer = setInterval(() => {
-    void pollOnce(getWindow).catch((error: unknown) => {
-      setState(getWindow, {
-        error: error instanceof Error ? error.message : String(error),
-        message: "Polling media lokal gagal."
-      });
-    });
-  }, state.config.pollIntervalMs);
+  // Start polling cycle (non-overlapping setTimeout loop)
+  runPollCycle(getWindow);
 
   // Sub-second high frequency tick for instant real-time lyric transitions (50ms)
   tickTimer = setInterval(() => {
@@ -750,7 +777,7 @@ const startPolling = async (getWindow: () => BrowserWindow | null) => {
 
 const stopPolling = async (getWindow: () => BrowserWindow | null) => {
   if (pollTimer) {
-    clearInterval(pollTimer);
+    clearTimeout(pollTimer);
     pollTimer = null;
   }
   if (tickTimer) {
@@ -779,7 +806,7 @@ const stopPolling = async (getWindow: () => BrowserWindow | null) => {
     running: false,
     currentLyric: null,
     lyricsStatus: state.config.showLyrics ? "synced" : "disabled",
-    message: "Realtime update dihentikan."
+    message: tState("msgRealtimeUpdateStopped")
   });
 };
 
@@ -791,7 +818,7 @@ export const setupIpc = (getWindow: () => BrowserWindow | null) => {
   ipcMain.handle("rpc:save-config", async (_event, input: Partial<AppConfig>) => {
     state.config = sanitizeConfig(input);
     await savePersisted();
-    setState(getWindow, { config: state.config, message: "Konfigurasi disimpan.", error: null });
+    setState(getWindow, { config: state.config, message: tState("msgConfigSaved"), error: null });
     return state;
   });
 
@@ -802,7 +829,7 @@ export const setupIpc = (getWindow: () => BrowserWindow | null) => {
       setState(getWindow, {
         running: false,
         error: error instanceof Error ? error.message : String(error),
-        message: "Gagal memulai."
+        message: tState("msgStartFailed")
       });
     }
     return state;

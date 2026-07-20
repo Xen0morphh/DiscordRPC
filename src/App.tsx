@@ -1,6 +1,7 @@
 import { Activity, CheckCircle2, CircleSlash, Loader2, Mic2, MicOff, Pause, Play, Save } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AppConfig, RpcState } from "./vite-env";
+import { t } from "./utils/translations";
 
 const emptyConfig: AppConfig = {
   discordClientId: "",
@@ -9,7 +10,9 @@ const emptyConfig: AppConfig = {
   showAlbumArt: false,
   showLyrics: true,
   lyricsOffsetMs: 0,
-  largeImageKey: ""
+  largeImageKey: "",
+  language: "en",
+  discordStatusMode: "safe"
 };
 
 const initialState: RpcState = {
@@ -20,7 +23,7 @@ const initialState: RpcState = {
   lastTrack: null,
   currentLyric: null,
   lyricsStatus: "disabled",
-  message: "Memuat konfigurasi...",
+  message: t("msgLoadConfig", "en"),
   error: null
 };
 
@@ -31,15 +34,34 @@ const formatTime = (ms: number) => {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 };
 
-const lyricsStatusLabel = (status: string): string => {
+const lyricsStatusLabel = (status: string, lang: string): string => {
   switch (status) {
-    case "loading": return "Mencari lyrics…";
-    case "synced": return "🎵 Synced lyrics";
-    case "plain": return "📝 Plain lyrics (tanpa timestamp)";
-    case "not_found": return "Lyrics tidak ditemukan";
-    case "disabled": return "Lyrics dinonaktifkan";
+    case "loading": return t("statusLoading", lang);
+    case "synced": return t("statusSynced", lang);
+    case "plain": return t("statusPlain", lang);
+    case "not_found": return t("statusNotFound", lang);
+    case "disabled": return t("statusDisabled", lang);
     default: return "";
   }
+};
+
+const languagesList = [
+  { code: "en", label: "English" },
+  { code: "id", label: "Bahasa Indonesia" },
+  { code: "ja", label: "日本語 (Japanese)" },
+  { code: "zh", label: "简体中文 (Chinese)" },
+  { code: "ko", label: "한국어 (Korean)" },
+  { code: "de", label: "Deutsch (German)" },
+  { code: "ru", label: "Русский (Russian)" },
+  { code: "es", label: "Español (Spanish)" },
+  { code: "fr", label: "Français (French)" },
+  { code: "it", label: "Italiano (Italian)" },
+  { code: "ar", label: "العربية (Arabic)" }
+];
+
+const getLanguageLabel = (code: string): string => {
+  const matched = languagesList.find(lang => lang.code === code);
+  return matched ? matched.label : "English";
 };
 
 export const App = () => {
@@ -48,11 +70,27 @@ export const App = () => {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const api = window.spotifyRpc;
 
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const lang = state.config.language || "en";
+  const tApp = (key: Parameters<typeof t>[0], variables?: Parameters<typeof t>[2]) => t(key, lang, variables);
+
   useEffect(() => {
     if (!api) {
       setState({
         ...initialState,
-        message: "Jalankan lewat Electron dengan npm run dev. Halaman localhost di browser biasa tidak punya akses Discord RPC."
+        message: t("msgDevServerRequired", "en")
       });
       return undefined;
     }
@@ -78,7 +116,7 @@ export const App = () => {
     if (!api) {
       setState((currentState) => ({
         ...currentState,
-        error: "Aplikasi harus dijalankan lewat Electron, bukan browser biasa."
+        error: t("msgElectronRequired", lang)
       }));
       return;
     }
@@ -99,78 +137,216 @@ export const App = () => {
 
   const isBusy = Boolean(busyAction);
 
+  const changeLanguage = async (newLang: string) => {
+    const nextForm = { ...form, language: newLang };
+    setForm(nextForm);
+    if (api) {
+      await runAction("save", () => api.saveConfig(nextForm));
+    }
+  };
+
   return (
-    <main className="app-shell">
+    <main className="app-shell" dir={lang === "ar" ? "rtl" : "ltr"}>
       <section className="topbar">
         <div>
-          <p className="eyebrow">Spotify to Discord</p>
-          <h1>Realtime Lyrics Status</h1>
+          <p className="eyebrow">{tApp("eyebrow")}</p>
+          <h1>{tApp("appTitle")}</h1>
         </div>
-        <div className={`status-pill ${state.running ? "active" : ""}`}>
-          <Activity size={18} />
-          {state.running ? "Live" : "Idle"}
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          {/* Custom Dropdown */}
+          <div className="custom-dropdown" ref={dropdownRef} style={{ position: "relative" }}>
+            <button
+              className="dropdown-trigger"
+              onClick={() => setDropdownOpen(!dropdownOpen)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "8px",
+                width: "160px",
+                minHeight: "38px",
+                padding: "0 14px",
+                background: "rgba(255, 255, 255, 0.04)",
+                border: "1px solid rgba(255, 255, 255, 0.08)",
+                borderRadius: "8px",
+                color: "#e2e8f0",
+                cursor: "pointer",
+                transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
+                fontSize: "0.88rem",
+                fontWeight: "500",
+                boxShadow: "0 2px 8px rgba(0,0,0,0.16)",
+                outline: "none"
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(255, 255, 255, 0.08)";
+                e.currentTarget.style.borderColor = "rgba(69, 223, 169, 0.4)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "rgba(255, 255, 255, 0.04)";
+                e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.08)";
+              }}
+            >
+              <span>{getLanguageLabel(form.language || "en")}</span>
+              <span
+                style={{
+                  display: "inline-block",
+                  transform: dropdownOpen ? "rotate(180deg)" : "rotate(0deg)",
+                  transition: "transform 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
+                  fontSize: "0.75rem",
+                  opacity: 0.7
+                }}
+              >
+                ▼
+              </span>
+            </button>
+
+            {dropdownOpen && (
+              <div
+                className="dropdown-menu-list"
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 6px)",
+                  right: lang === "ar" ? "auto" : "0",
+                  left: lang === "ar" ? "0" : "auto",
+                  width: "200px",
+                  maxHeight: "260px",
+                  overflowY: "auto",
+                  background: "#181a20",
+                  border: "1px solid rgba(255, 255, 255, 0.1)",
+                  borderRadius: "8px",
+                  boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5)",
+                  zIndex: 100,
+                  padding: "4px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "2px",
+                  animation: "dropdownFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1)"
+                }}
+              >
+                {languagesList.map((item) => (
+                  <button
+                    key={item.code}
+                    onClick={() => {
+                      void changeLanguage(item.code);
+                      setDropdownOpen(false);
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "flex-start",
+                      width: "100%",
+                      minHeight: "36px",
+                      padding: "0 12px",
+                      background: form.language === item.code ? "rgba(69, 223, 169, 0.12)" : "transparent",
+                      border: "0",
+                      borderRadius: "6px",
+                      color: form.language === item.code ? "#45dfa9" : "#cbd5e1",
+                      cursor: "pointer",
+                      fontSize: "0.85rem",
+                      fontWeight: form.language === item.code ? "600" : "400",
+                      transition: "all 0.15s ease",
+                      textAlign: "left"
+                    }}
+                    onMouseEnter={(e) => {
+                      if (form.language !== item.code) {
+                        e.currentTarget.style.background = "rgba(255, 255, 255, 0.05)";
+                        e.currentTarget.style.color = "#ffffff";
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (form.language !== item.code) {
+                        e.currentTarget.style.background = "transparent";
+                        e.currentTarget.style.color = "#cbd5e1";
+                      }
+                    }}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className={`status-pill ${state.running ? "active" : ""}`}>
+            <Activity size={18} />
+            {state.running ? tApp("live") : tApp("idle")}
+          </div>
         </div>
       </section>
 
       <section className="workspace">
         <aside className="settings-panel">
           <div className="section-title">
-            <h2>Konfigurasi</h2>
-            <button className="icon-button" onClick={saveConfig} disabled={isBusy || !api} title="Simpan konfigurasi">
+            <h2>{tApp("configuration")}</h2>
+            <button className="icon-button" onClick={saveConfig} disabled={isBusy || !api} title={tApp("saveConfig")}>
               {busyAction === "save" ? <Loader2 className="spin" size={18} /> : <Save size={18} />}
             </button>
           </div>
 
           <label>
-            🔑 Discord User Token
+            {tApp("discordUserToken")}
             <input
               type="password"
               value={form.discordUserToken}
               onChange={(event) => setForm({ ...form, discordUserToken: event.target.value })}
-              placeholder="Token untuk update custom status"
+              placeholder={tApp("discordTokenPlaceholder")}
             />
-            <span className="field-hint">Lyrics muncul di custom status (area 'Rawrr')</span>
+            <span className="field-hint">{tApp("discordTokenHint")}</span>
           </label>
 
           <label>
-            Discord Application ID <span className="optional-badge">Opsional</span>
+            {tApp("discordClientId")} <span className="optional-badge">{tApp("optional")}</span>
             <input
               value={form.discordClientId}
               onChange={(event) => setForm({ ...form, discordClientId: event.target.value })}
-              placeholder="Untuk Rich Presence (Playing...)"
+              placeholder={tApp("discordClientIdPlaceholder")}
             />
           </label>
 
           <label>
-            Polling interval
+            {tApp("pollingInterval")}
             <select
               value={form.pollIntervalMs}
               onChange={(event) => setForm({ ...form, pollIntervalMs: Number(event.target.value) })}
             >
-              <option value={500}>0.5 detik (Super fast)</option>
-              <option value={1000}>1 detik</option>
-              <option value={2000}>2 detik</option>
-              <option value={3000}>3 detik</option>
-              <option value={5000}>5 detik</option>
-              <option value={10000}>10 detik</option>
-              <option value={15000}>15 detik</option>
+              <option value={100}>{tApp("secondsRealtime")}</option>
+              <option value={500}>{tApp("secondsFast")}</option>
+              <option value={1000}>{tApp("secondsShort", { s: 1 })}</option>
+              <option value={2000}>{tApp("secondsShort", { s: 2 })}</option>
+              <option value={3000}>{tApp("secondsShort", { s: 3 })}</option>
+              <option value={5000}>{tApp("secondsShort", { s: 5 })}</option>
+              <option value={10000}>{tApp("secondsShort", { s: 10 })}</option>
+              <option value={15000}>{tApp("secondsShort", { s: 15 })}</option>
             </select>
           </label>
 
           <label>
-            ⏱️ Offset Lyrics (ms)
+            {tApp("discordStatusMode")}
+            <select
+              value={form.discordStatusMode || "safe"}
+              onChange={(event) => setForm({ ...form, discordStatusMode: event.target.value })}
+            >
+              <option value="safe">{tApp("discordStatusModeSafe")}</option>
+              <option value="aesthetic">{tApp("discordStatusModeAesthetic")}</option>
+            </select>
+            <span className="field-hint" style={{ color: form.discordStatusMode === "aesthetic" ? "#ff6b6b" : undefined }}>
+              {tApp("discordStatusModeHint")}
+            </span>
+          </label>
+
+          <label>
+            {tApp("lyricsOffset")}
             <input
               type="number"
               step={100}
               value={form.lyricsOffsetMs ?? 0}
               onChange={(event) => setForm({ ...form, lyricsOffsetMs: Number(event.target.value) || 0 })}
-              placeholder="0 (misal: -500 jika lirik telat)"
+              placeholder="0"
             />
-            <span className="field-hint">Gunakan minus (-) jika lirik terlambat, plus (+) jika terlalu cepat</span>
+            <span className="field-hint">{tApp("lyricsOffsetHint")}</span>
           </label>
 
           <div className="toggle-row">
-            <span>Show Lyrics di Discord</span>
+            <span>{tApp("showLyrics")}</span>
             <input
               type="checkbox"
               checked={form.showLyrics}
@@ -181,28 +357,28 @@ export const App = () => {
           <div className="connection-grid">
             <div>
               {state.mediaSessionAvailable ? <CheckCircle2 size={18} /> : <CircleSlash size={18} />}
-              Media lokal
+              {tApp("mediaLocal")}
             </div>
             <div>
               {state.discordConnected ? <CheckCircle2 size={18} /> : <CircleSlash size={18} />}
-              Discord
+              {tApp("discord")}
             </div>
           </div>
         </aside>
 
         <section className="player-panel">
           <div className="section-title">
-            <h2>Sekarang Diputar</h2>
+            <h2>{tApp("nowPlaying")}</h2>
             <div className="actions">
               {state.running ? (
                 <button className="danger" onClick={stop} disabled={isBusy || !api}>
                   <Pause size={18} />
-                  Stop
+                  {tApp("stop")}
                 </button>
               ) : (
                 <button className="primary" onClick={start} disabled={isBusy || !api}>
                   {busyAction === "start" ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-                  Start
+                  {tApp("start")}
                 </button>
               )}
             </div>
@@ -214,10 +390,10 @@ export const App = () => {
             </div>
 
             <div className="track-info">
-              <p className="track-status">{state.lastTrack?.isPlaying ? "Playing" : "No active playback"}</p>
-              <h3>{state.lastTrack?.title ?? "Belum ada lagu terdeteksi"}</h3>
-              <p>{state.lastTrack?.artist ?? "Putar lagu di Spotify desktop lalu tekan Start."}</p>
-              <span>{state.lastTrack?.album ?? "Tanpa Spotify Web API, tanpa login Spotify, tanpa premium."}</span>
+              <p className="track-status">{state.lastTrack?.isPlaying ? tApp("playing") : tApp("noPlayback")}</p>
+              <h3>{state.lastTrack?.title ?? tApp("noTrackDetected")}</h3>
+              <p>{state.lastTrack?.artist ?? tApp("playbackGuide")}</p>
+              <span>{state.lastTrack?.album ?? tApp("noApiHint")}</span>
             </div>
           </div>
 
@@ -236,10 +412,10 @@ export const App = () => {
             <div className="lyrics-header">
               <div className="lyrics-title">
                 {form.showLyrics ? <Mic2 size={18} /> : <MicOff size={18} />}
-                <span>Lyrics</span>
+                <span>{tApp("lyrics")}</span>
               </div>
               <span className={`lyrics-badge ${state.lyricsStatus}`}>
-                {lyricsStatusLabel(state.lyricsStatus)}
+                {lyricsStatusLabel(state.lyricsStatus, lang)}
               </span>
             </div>
 
@@ -247,7 +423,7 @@ export const App = () => {
               {state.lyricsStatus === "loading" && (
                 <div className="lyrics-loading">
                   <Loader2 className="spin" size={22} />
-                  <span>Mencari lyrics…</span>
+                  <span>{tApp("statusLoading")}</span>
                 </div>
               )}
 
@@ -263,25 +439,25 @@ export const App = () => {
 
               {state.lyricsStatus === "plain" && (
                 <div className="lyric-line plain-lyrics-info">
-                  <p style={{ margin: 0, fontWeight: "500" }}>Lirik tersedia (tidak disinkronkan)</p>
+                  <p style={{ margin: 0, fontWeight: "500" }}>{tApp("plainLyricsInfo")}</p>
                   <p style={{ margin: "4px 0 0", fontSize: "0.85em", opacity: 0.7 }}>
-                    Status Discord: {state.lastTrack?.title} — {state.lastTrack?.artist}
+                    {tApp("plainLyricsDiscordStatus")} {state.lastTrack?.title} — {state.lastTrack?.artist}
                   </p>
                 </div>
               )}
 
               {state.lyricsStatus === "not_found" && (
-                <p className="lyric-line not-found">Lyrics tidak tersedia untuk lagu ini</p>
+                <p className="lyric-line not-found">{tApp("lyricsNotAvailable")}</p>
               )}
 
               {state.lyricsStatus === "disabled" && (
-                <p className="lyric-line not-found">Aktifkan "Show Lyrics" di settings</p>
+                <p className="lyric-line not-found">{tApp("enableLyricsHint")}</p>
               )}
             </div>
           </div>
 
           <div className={`message-box ${state.error ? "error" : ""}`}>
-            <strong>{state.error ? "Error" : "Status"}</strong>
+            <strong>{state.error ? tApp("errorLabel") : tApp("statusLabel")}</strong>
             <span>{state.error ?? state.message}</span>
           </div>
         </section>
