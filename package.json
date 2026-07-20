@@ -1,6 +1,6 @@
 {
   "name": "discordrpc-spotify-realtime",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Realtime Discord Rich Presence from the local Spotify desktop media session.",
   "author": "Xenomorph",
